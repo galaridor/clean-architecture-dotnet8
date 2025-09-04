@@ -2,19 +2,21 @@
 using CleanArchitecture.Infrastructure.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Respawn;
 using Testcontainers.MsSql;
 
 namespace CleanArchitecture.Application.FunctionalTests;
 
-public class TestcontainersTestDatabase : ITestDatabase
+public class SqlTestcontainersTestDatabase : ITestDatabase
 {
+    private const string DefaultDatabase = "CleanArchitectureTestDb";
     private readonly MsSqlContainer _container;
     private DbConnection _connection = null!;
     private string _connectionString = null!;
     private Respawner _respawner = null!;
 
-    public TestcontainersTestDatabase()
+    public SqlTestcontainersTestDatabase()
     {
         _container = new MsSqlBuilder()
             .WithAutoRemove(true)
@@ -24,28 +26,38 @@ public class TestcontainersTestDatabase : ITestDatabase
     public async Task InitialiseAsync()
     {
         await _container.StartAsync();
+        await _container.ExecScriptAsync($"CREATE DATABASE {DefaultDatabase}");
 
-        _connectionString = _container.GetConnectionString();
+        var builder = new SqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            InitialCatalog = DefaultDatabase
+        };
+
+        _connectionString = builder.ConnectionString;
 
         _connection = new SqlConnection(_connectionString);
 
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlServer(_connectionString)
+            .ConfigureWarnings(warnings => warnings.Log(RelationalEventId.PendingModelChangesWarning))
             .Options;
 
         var context = new ApplicationDbContext(options);
 
-        context.Database.Migrate();
+        await context.Database.EnsureDeletedAsync();
+        await context.Database.EnsureCreatedAsync();
 
-        _respawner = await Respawner.CreateAsync(_connectionString, new RespawnerOptions
-        {
-            TablesToIgnore = new Respawn.Graph.Table[] { "__EFMigrationsHistory" }
-        });
+        _respawner = await Respawner.CreateAsync(_connectionString);
     }
 
     public DbConnection GetConnection()
     {
         return _connection;
+    }
+
+    public string GetConnectionString()
+    {
+        return _connectionString;
     }
 
     public async Task ResetAsync()
